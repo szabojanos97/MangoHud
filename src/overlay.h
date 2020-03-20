@@ -1,5 +1,6 @@
 #include <string>
 #include <stdint.h>
+#include <vector>
 #include "imgui.h"
 #include "overlay_params.h"
 #include "iostats.h"
@@ -33,6 +34,12 @@ struct swapchain_stats {
       int32_t minor;
       int32_t patch;
    } version_vk;
+   struct {
+      int one_percent;
+      int avg;
+      int ninety_seven;
+   } fps_stats;
+   std::vector<int> fps_data;
 };
 
 struct fps_limit {
