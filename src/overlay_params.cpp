@@ -327,6 +327,9 @@ parse_overlay_config(struct overlay_params *params,
    params->enabled[OVERLAY_PARAM_ENABLED_read_cfg] = false;
    params->enabled[OVERLAY_PARAM_ENABLED_io_read] = false;
    params->enabled[OVERLAY_PARAM_ENABLED_io_write] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_avg_fps] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_ninenty_seventh] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_one_percent] = false;
    params->fps_sampling_period = 500000; /* 500ms */
    params->width = 280;
    params->height = 140;
