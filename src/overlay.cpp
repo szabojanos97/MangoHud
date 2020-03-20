@@ -914,6 +914,24 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
    double elapsed = (double)(now - sw_stats.last_fps_update); /* us */
    fps = 1000000.0f * sw_stats.n_frames_since_update / elapsed;
 
+   sw_stats.fps_data.push_back(fps);
+   int total_fps = 0;
+   int one_percent = 0;
+   std::sort(sw_stats.fps_data.begin(), sw_stats.fps_data.end());
+   int index = 0.97f * sw_stats.fps_data.size();
+   int ninety_seventh = sw_stats.fps_data[index];
+   
+   int i = 0;                     
+   for (auto _fps : sw_stats.fps_data) {
+      total_fps += _fps;
+      if (i < (sw_stats.fps_data.size() * 0.1))
+         one_percent += _fps;
+      i++;
+   }
+   
+   int average_fps = total_fps / sw_stats.fps_data.size();
+   one_percent /= sw_stats.fps_data.size() * 0.1;
+
    if (sw_stats.last_present_time) {
         sw_stats.frames_stats[f_idx].stats[OVERLAY_PARAM_ENABLED_frame_timing] =
             now - sw_stats.last_present_time;
@@ -921,6 +939,9 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
 
    if (sw_stats.last_fps_update) {
       if (elapsed >= params.fps_sampling_period) {
+         sw_stats.fps_stats.one_percent = one_percent;
+         sw_stats.fps_stats.avg = average_fps;
+         sw_stats.fps_stats.ninety_seven = ninety_seventh;
 
          if (params.enabled[OVERLAY_PARAM_ENABLED_cpu_stats]) {
             cpuStats.UpdateCPUData();
