@@ -874,7 +874,7 @@ void init_system_info(){
         log_period = 100;
 }
 
-void check_keybinds(struct overlay_params& params){
+void check_keybinds(struct overlay_params& params, struct swapchain_stats sw_stats){
    uint64_t now = os_time_get(); /* us */
    elapsedF2 = (double)(now - last_f2_press);
    elapsedF12 = (double)(now - last_f12_press);
@@ -885,6 +885,7 @@ void check_keybinds(struct overlay_params& params){
        last_f2_press = now;
        log_start = now;
        loggingOn = !loggingOn;
+       sw_stats.fps_data.clear();
 
        if (loggingOn && log_period != 0)
          pthread_create(&f2, NULL, &logging, &params);
@@ -999,7 +1000,7 @@ static void snapshot_swapchain_frame(struct swapchain_data *data)
    struct device_data *device_data = data->device;
    struct instance_data *instance_data = device_data->instance;
    update_hud_info(data->sw_stats, instance_data->params, device_data->properties.vendorID);
-   check_keybinds(instance_data->params);
+   check_keybinds(instance_data->params, data->sw_stats);
 
    // not currently used
    // if (instance_data->params.control >= 0) {
