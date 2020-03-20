@@ -1217,6 +1217,37 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          ImGui::Text("GB");
          ImGui::PopFont();
       }
+      auto engine_color = ImGui::ColorConvertU32ToFloat4(params.engine_color);
+      if (params.enabled[OVERLAY_PARAM_ENABLED_one_percent]){
+         ImGui::TableNextRow();
+         ImGui::TextColored(engine_color, "%s", "1% LOW");
+         ImGui::TableNextCell();
+         right_aligned_text(char_width * 4, "%i", data.fps_stats.one_percent);
+         ImGui::PushFont(data.font1);   
+         ImGui::SameLine(0, 1.0f);
+         ImGui::Text("FPS");
+         ImGui::PopFont();        
+      }
+      if (params.enabled[OVERLAY_PARAM_ENABLED_avg_fps]){
+         ImGui::TableNextRow();
+         ImGui::TextColored(engine_color, "%s", "AVG");
+         ImGui::TableNextCell();
+         right_aligned_text(char_width * 4, "%i", data.fps_stats.avg);
+         ImGui::PushFont(data.font1);   
+         ImGui::SameLine(0, 1.0f);
+         ImGui::Text("FPS");
+         ImGui::PopFont();           
+      }
+      if (params.enabled[OVERLAY_PARAM_ENABLED_ninenty_seventh]){
+         ImGui::TableNextRow();
+         ImGui::TextColored(engine_color, "%s", "97TH");
+         ImGui::TableNextCell();
+         right_aligned_text(char_width * 4, "%i", data.fps_stats.ninety_seven);
+         ImGui::PushFont(data.font1);
+         ImGui::SameLine(0, 1.0f);
+         ImGui::Text("FPS");
+         ImGui::PopFont();   
+      }
       if (params.enabled[OVERLAY_PARAM_ENABLED_fps]){
          ImGui::TableNextRow();
          ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.engine_color), "%s", is_vulkan ? engineName.c_str() : "OpenGL");
@@ -1238,7 +1269,6 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
       if (params.enabled[OVERLAY_PARAM_ENABLED_fps]){
          ImGui::PushFont(data.font1);
          ImGui::Dummy(ImVec2(0, 8.0f));
-         auto engine_color = ImGui::ColorConvertU32ToFloat4(params.engine_color);
          if (is_vulkan) {
             if ((engineName == "DXVK" || engineName == "VKD3D")){
                ImGui::TextColored(engine_color,
