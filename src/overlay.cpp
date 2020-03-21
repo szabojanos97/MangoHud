@@ -874,7 +874,7 @@ void init_system_info(){
         log_period = 100;
 }
 
-void check_keybinds(struct overlay_params& params, struct swapchain_stats sw_stats){
+void check_keybinds(struct overlay_params& params, struct swapchain_stats& sw_stats){
    uint64_t now = os_time_get(); /* us */
    elapsedF2 = (double)(now - last_f2_press);
    elapsedF12 = (double)(now - last_f12_press);
