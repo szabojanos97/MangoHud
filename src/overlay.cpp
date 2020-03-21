@@ -914,9 +914,9 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
 
    double elapsed = (double)(now - sw_stats.last_fps_update); /* us */
    fps = 1000000.0f * sw_stats.n_frames_since_update / elapsed;
-
+   if (sw_stats.fps_data.size() == sw_stats.fps_data.capacity())
+      sw_stats.fps_data.reserve(10000); // add extra 10000 frames
    sw_stats.fps_data.push_back(fps);
-
 
    if (sw_stats.last_present_time) {
         sw_stats.frames_stats[f_idx].stats[OVERLAY_PARAM_ENABLED_frame_timing] =
