@@ -21,6 +21,10 @@
  * IN THE SOFTWARE.
  */
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
@@ -30,6 +34,7 @@
 #include <mutex>
 #include <vector>
 #include <list>
+#include <array>
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
@@ -54,9 +59,11 @@
 #include "logging.h"
 #include "keybinds.h"
 #include "cpu.h"
-#include "loaders/loader_nvml.h"
-#include "memory.h"
 #include "notify.h"
+
+#ifdef __gnu_linux__
+#include "memory.h"
+#endif
 
 bool open = false;
 string gpuString;
@@ -674,6 +681,7 @@ string exec(string command) {
    char buffer[128];
    string result = "";
 
+#ifdef __gnu_linux__
    // Open pipe to file
    FILE* pipe = popen(command.c_str(), "r");
    if (!pipe) {
@@ -689,23 +697,27 @@ string exec(string command) {
    }
 
    pclose(pipe);
+#endif
+
    return result;
 }
 
 void init_cpu_stats(overlay_params& params)
 {
    auto& enabled = params.enabled;
+#ifdef __gnu_linux__
    enabled[OVERLAY_PARAM_ENABLED_cpu_stats] = cpuStats.Init()
                            && enabled[OVERLAY_PARAM_ENABLED_cpu_stats];
    enabled[OVERLAY_PARAM_ENABLED_cpu_temp] = cpuStats.GetCpuFile()
                            && enabled[OVERLAY_PARAM_ENABLED_cpu_temp];
+#endif
 }
 
 void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
 {
    if (!params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats])
       return;
-
+#ifdef __gnu_linux__
    // NVIDIA or Intel but maybe has Optimus
    if (vendorID == 0x8086
       || vendorID == 0x10de) {
@@ -777,9 +789,11 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
          params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = false;
       }
    }
+#endif
 }
 
 void init_system_info(){
+#ifdef __gnu_linux__
       unsetenv("LD_PRELOAD");
       ram =  exec("cat /proc/meminfo | grep 'MemTotal' | awk '{print $2}'");
       trim(ram);
@@ -804,6 +818,7 @@ void init_system_info(){
                 << "Gpu:" << gpu << "\n"
                 << "Driver:" << driver << std::endl;
 #endif
+#endif
 
       if (!log_period_env || !try_stoi(log_period, log_period_env))
         log_period = 100;
@@ -817,7 +832,7 @@ void check_keybinds(struct overlay_params& params){
    elapsedReloadCfg = (double)(now - reload_cfg_press);
   
   if (elapsedF2 >= 500000 && !params.output_file.empty()){
-#ifdef HAVE_X11
+#if defined(HAVE_X11) || defined(_WIN32)
      pressed = key_is_pressed(params.toggle_logging);
 #else
      pressed = false;
@@ -827,14 +842,15 @@ void check_keybinds(struct overlay_params& params){
        log_start = now;
        loggingOn = !loggingOn;
 
-       if (loggingOn && log_period != 0)
-         pthread_create(&f2, NULL, &logging, &params);
-
+       if (loggingOn && log_period != 0) {
+         auto f2 = std::thread(logging, &params); //std::ref(params));
+         f2.detach(); //FIXME hackish
+      }
      }
    }
 
    if (elapsedF12 >= 500000){
-#ifdef HAVE_X11
+#if defined(HAVE_X11) || defined(_WIN32)
       pressed = key_is_pressed(params.toggle_hud);
 #else
       pressed = false;
@@ -846,7 +862,7 @@ void check_keybinds(struct overlay_params& params){
    }
 
    if (elapsedReloadCfg >= 500000){
-#ifdef HAVE_X11
+#if defined(HAVE_X11) || defined(_WIN32)
       pressed = key_is_pressed(params.reload_cfg);
 #else
       pressed = false;
@@ -873,6 +889,7 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
    if (sw_stats.last_fps_update) {
       if (elapsed >= params.fps_sampling_period) {
 
+#ifdef __gnu_linux__
          if (params.enabled[OVERLAY_PARAM_ENABLED_cpu_stats]) {
             cpuStats.UpdateCPUData();
             sw_stats.total_cpu = cpuStats.GetCPUDataTotal().percent;
@@ -899,6 +916,8 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
 
          gpuLoadLog = gpu_info.load;
          cpuLoadLog = sw_stats.total_cpu;
+#endif
+
          sw_stats.fps = fps;
 
          if (params.enabled[OVERLAY_PARAM_ENABLED_time]) {
@@ -1000,7 +1019,9 @@ static void right_aligned_text(float off_x, const char *fmt, ...)
 
 void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& window_size, bool is_vulkan)
 {
+#ifdef __gnu_linux__
    static float char_width = ImGui::CalcTextSize("A").x;
+#endif
    window_size = ImVec2(params.width, params.height);
    unsigned width = ImGui::GetIO().DisplaySize.x;
    unsigned height = ImGui::GetIO().DisplaySize.y;
@@ -1010,6 +1031,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
       if (params.enabled[OVERLAY_PARAM_ENABLED_time]){
          ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.00f), "%s", data.time.c_str());
       }
+#ifdef __gnu_linux__
       ImGui::BeginTable("hud", params.tableCols);
       if (params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats]){
          ImGui::TableNextRow();
@@ -1150,6 +1172,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          ImGui::PopFont();
       }
       ImGui::EndTable();
+#endif
 
       if (params.enabled[OVERLAY_PARAM_ENABLED_fps]){
          ImGui::PushFont(data.font1);
@@ -2448,8 +2471,9 @@ static VkResult overlay_CreateInstance(
 
    parse_overlay_config(&instance_data->params, getenv("MANGOHUD_CONFIG"));
    instance_data->notifier.params = &instance_data->params;
+#ifdef __gnu_linux__
    start_notifier(instance_data->notifier);
-
+#endif
    init_cpu_stats(instance_data->params);
 
    // Adjust height for DXVK/VKD3D version number
@@ -2474,9 +2498,17 @@ static void overlay_DestroyInstance(
    struct instance_data *instance_data = FIND(struct instance_data, instance);
    instance_data_map_physical_devices(instance_data, false);
    instance_data->vtable.DestroyInstance(instance, pAllocator);
+#ifdef __gnu_linux__
    stop_notifier(instance_data->notifier);
+#endif
    destroy_instance_data(instance_data);
 }
+
+// Doesn't seem to define for windows
+#ifdef _WIN32
+  #undef VK_LAYER_EXPORT
+  #define VK_LAYER_EXPORT __declspec(dllexport) // Note: actually gcc seems to also supports this syntax.
+#endif
 
 extern "C" VK_LAYER_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL overlay_GetDeviceProcAddr(VkDevice dev,
                                                                              const char *funcName);
