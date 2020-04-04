@@ -717,8 +717,12 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
 {
    if (!params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats])
       return;
-#ifdef __gnu_linux__
    // NVIDIA or Intel but maybe has Optimus
+#ifdef _WIN32
+   bool nvSuccess = (checkNVML() && getNVMLInfo());
+#endif
+
+#ifdef __gnu_linux__
    if (vendorID == 0x8086
       || vendorID == 0x10de) {
 
@@ -888,7 +892,13 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
 
    if (sw_stats.last_fps_update) {
       if (elapsed >= params.fps_sampling_period) {
+         // if (params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats]) {
+         //    if (vendorID == 0x1002)
+         //       pthread_create(&gpuThread, NULL, &getAmdGpuUsage, NULL);
 
+         //    if (vendorID == 0x10de)
+               pthread_create(&gpuThread, NULL, &getNvidiaGpuInfo, NULL);
+         // }
 #ifdef __gnu_linux__
          if (params.enabled[OVERLAY_PARAM_ENABLED_cpu_stats]) {
             cpuStats.UpdateCPUData();
@@ -900,13 +910,6 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
                cpuStats.UpdateCpuTemp();
          }
 
-         if (params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats]) {
-            if (vendorID == 0x1002)
-               pthread_create(&gpuThread, NULL, &getAmdGpuUsage, NULL);
-
-            if (vendorID == 0x10de)
-               pthread_create(&gpuThread, NULL, &getNvidiaGpuInfo, NULL);
-         }
 
          // get ram usage/max
          if (params.enabled[OVERLAY_PARAM_ENABLED_ram])
@@ -1030,7 +1033,6 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.00f), "%s", data.time.c_str());
       }
       ImGui::BeginTable("hud", params.tableCols);
-#ifdef __gnu_linux__
       if (params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats]){
          ImGui::TableNextRow();
          ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.gpu_color), "GPU");
@@ -1055,6 +1057,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
             ImGui::PopFont();
          }
       }
+#ifdef __gnu_linux__
       if(params.enabled[OVERLAY_PARAM_ENABLED_cpu_stats]){
          ImGui::TableNextRow();
          ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.cpu_color), "CPU");
@@ -1125,6 +1128,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
             ImGui::PopFont();
          }
       }
+#endif
       if (params.enabled[OVERLAY_PARAM_ENABLED_vram]){
          ImGui::TableNextRow();
          ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.vram_color), "VRAM");
@@ -1143,6 +1147,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
             ImGui::PopFont();
          }
       }
+#ifdef __gnu_linux__
       if (params.enabled[OVERLAY_PARAM_ENABLED_ram]){
          ImGui::TableNextRow();
          ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.ram_color), "RAM");

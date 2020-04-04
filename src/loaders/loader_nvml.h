@@ -7,8 +7,8 @@
 #include "nvml.h"
 #define LIBRARY_LOADER_NVML_H_DLOPEN
 
+#define NVMLQUERY_DEFAULT_NVML_DLL_PATH "C:\\Program Files\\NVIDIA Corporation\\NVSMI\\NVML.DLL"
 #include <string>
-#include <dlfcn.h>
 
 class libnvml_loader {
  public:

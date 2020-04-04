@@ -43,6 +43,8 @@ vklayer_files = files(
   'overlay_params.cpp',
   'font_unispace.c',
   'config.cpp',
+  'nvml.cpp',
+  'gpu.cpp',
 )
 
 opengl_files = []
@@ -53,12 +55,10 @@ if is_unixy
     'cpu.cpp',
     'memory.cpp',
     'iostats.cpp',
-    'gpu.cpp',
     'notify.cpp',
     'elfhacks.cpp',
     'real_dlsym.cpp',
     'loaders/loader_nvml.cpp',
-    'nvml.cpp',
   )
 
   pre_args += '-DHAVE_NVML'
@@ -71,6 +71,7 @@ endif
 if ['windows', 'mingw'].contains(host_machine.system())
   vklayer_files += files(
     'file_utils_win32.cpp',
+    'loaders/loader_nvml_win32.cpp'
 #    'MangoHud.def',
   )
 endif
