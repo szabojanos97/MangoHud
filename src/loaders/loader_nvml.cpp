@@ -2,7 +2,7 @@
 // Path to the code generator: /home/crz/git/MangoHud/generate_library_loader.py .
 
 #include "loader_nvml.h"
-
+#include <dlfcn.h>
 // Put these sanity checks here so that they fire at most once
 // (to avoid cluttering the build output).
 #if !defined(LIBRARY_LOADER_NVML_H_DLOPEN) && !defined(LIBRARY_LOADER_NVML_H_DT_NEEDED)
