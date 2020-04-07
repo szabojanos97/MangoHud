@@ -92,18 +92,21 @@ endforeach
 vulkan_wsi_args = []
 vulkan_wsi_deps = []
 
-with_platform_x11 = true
-with_platform_wayland = false
+dep_x11 = dependency('x11', required: get_option('with_x11'))
+dep_wayland_client = dependency('wayland-client',
+    required: get_option('with_wayland'), version : '>=1.11')
 
-if with_platform_x11
-  dep_x11 = dependency('x11')
+if dep_x11.found()
   vulkan_wsi_args += ['-DVK_USE_PLATFORM_XLIB_KHR']
-  vulkan_wsi_deps += dep_x11
+  vulkan_wsi_deps += dep_x11.partial_dependency(compile_args : true, includes : true)
 endif
-if with_platform_wayland
-  dep_wayland_client = dependency('wayland-client', version : '>=1.11')
+if dep_wayland_client.found()
   vulkan_wsi_args += ['-DVK_USE_PLATFORM_WAYLAND_KHR']
   vulkan_wsi_deps += dep_wayland_client
+endif
+
+if not dep_x11.found() and not dep_wayland_client.found()
+  error('At least one of "with_x11" and "with_wayland" should be enabled')
 endif
 
 inc_common = [
@@ -111,6 +114,8 @@ inc_common = [
 ]
 
 dep_vulkan = dependency('vulkan', required: get_option('use_system_vulkan'))
+dep_pthread = dependency('threads')
+dbus_dep = dependency('dbus-1', required: get_option('with_dbus')).partial_dependency(compile_args : true, includes : true)
 
 # Check for generic C arguments
 c_args = []
@@ -183,18 +188,16 @@ else
   dep_dl = cc.find_library('dl')
 endif
 
-dep_pthread = cc.find_library('pthread')
-
 if dep_vulkan.found()
-  vulkan_headers = []
   datadir = get_option('datadir')
   if not datadir.startswith('/')
     datadir = get_option('prefix') / datadir
   endif
   vk_api_xml = files(datadir / 'vulkan/registry/vk.xml')
 else
-  subdir('modules/Vulkan-Headers')
-  vulkan_headers = vk_api_xml
+  vkh_sp = subproject('vulkanheaders')
+  vk_api_xml = vkh_sp.get_variable('vulkan_api_xml')
+  dep_vulkan = vkh_sp.get_variable('vulkanheaders_dep')
 endif
 
 vk_enum_to_str = custom_target(
@@ -211,6 +214,13 @@ util_files = files(
   'src/mesa/util/os_socket.c',
   'src/mesa/util/os_time.c',
 )
+
+if cc.sizeof('void*') == 8
+  pre_args += '-DMANGOHUD_ARCH="64bit"'
+endif
+if cc.sizeof('void*') == 4
+  pre_args += '-DMANGOHUD_ARCH="32bit"'
+endif
 
 subdir('modules/ImGui')
 subdir('src')

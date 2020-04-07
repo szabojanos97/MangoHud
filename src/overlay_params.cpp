@@ -26,8 +26,6 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <sys/sysinfo.h>
-#include <X11/Xlib.h>
-#include <X11/keysym.h>
 #include <wordexp.h>
 #include "imgui.h"
 #include <iostream>
@@ -37,6 +35,11 @@
 #include "config.h"
 
 #include "mesa/util/os_socket.h"
+
+#ifdef HAVE_X11
+#include <X11/keysym.h>
+#include "loaders/loader_x11.h"
+#endif
 
 static enum overlay_param_position
 
@@ -86,23 +89,35 @@ parse_alpha(const char *str)
    return strtof(str, NULL);
 }
 
+#ifdef HAVE_X11
 static KeySym
 parse_toggle_hud(const char *str)
 {
-   return XStringToKeysym(str);
+   if (g_x11->IsLoaded())
+      return g_x11->XStringToKeysym(str);
+   return 0;
 }
 
 static KeySym
 parse_toggle_logging(const char *str)
 {
-   return XStringToKeysym(str);
+   if (g_x11->IsLoaded())
+      return g_x11->XStringToKeysym(str);
+   return 0;
 }
 
 static KeySym
 parse_reload_cfg(const char *str)
 {
-   return XStringToKeysym(str);
+   if (g_x11->IsLoaded())
+      return g_x11->XStringToKeysym(str);
+   return 0;
 }
+#else
+#define parse_toggle_hud(x)      0
+#define parse_toggle_logging(x)  0
+#define parse_reload_cfg(x)      0
+#endif
 
 static uint32_t
 parse_fps_sampling_period(const char *str)
@@ -334,9 +349,6 @@ parse_overlay_config(struct overlay_params *params,
    params->width = 280;
    params->height = 140;
    params->control = -1;
-   params->toggle_hud = XK_F12;
-   params->toggle_logging = XK_F2;
-   params->reload_cfg = XK_F4;
    params->fps_limit = 0;
    params->vsync = -1;
    params->gl_vsync = -2;
@@ -355,6 +367,12 @@ parse_overlay_config(struct overlay_params *params,
    params->frametime_color = strtol("00ff00", NULL, 16);
    params->background_color = strtol("020202", NULL, 16);
    params->text_color = strtol("ffffff", NULL, 16);
+
+#ifdef HAVE_X11
+   params->toggle_hud = XK_F12;
+   params->toggle_logging = XK_F2;
+   params->reload_cfg = XK_F4;
+#endif
 
    // first pass with env var
    if (env)
@@ -400,8 +418,6 @@ parse_overlay_config(struct overlay_params *params,
    if (env && read_cfg)
       parse_overlay_env(params, env);
 
-   // Command buffer gets reused and timestamps cause hangs for some reason, force off for now
-   params->enabled[OVERLAY_PARAM_ENABLED_gpu_timing] = false;
    // Convert from 0xRRGGBB to ImGui's format
    std::array<unsigned *, 10> colors = {
       &params->crosshair_color,
@@ -442,6 +458,6 @@ parse_overlay_config(struct overlay_params *params,
    }
    
    // set frametime limit
-   if (params->fps_limit > 0)
+   if (params->fps_limit >= 0)
       fps_limit_stats.targetFrameTime = int64_t(1000000000.0 / params->fps_limit);
 }

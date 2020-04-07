@@ -58,11 +58,15 @@
 #include "memory.h"
 #include "notify.h"
 
+#ifdef HAVE_DBUS
+#include "dbus_info.h"
+float g_overflow = 50.f /* 3333ms * 0.5 / 16.6667 / 2 (to edge and back) */;
+#endif
+
 bool open = false;
 string gpuString;
 float offset_x, offset_y, hudSpacing;
 int hudFirstRow, hudSecondRow;
-string engineName, engineVersion;
 struct amdGpu amdgpu;
 struct fps_limit fps_limit_stats;
 
@@ -72,7 +76,6 @@ struct instance_data {
    VkInstance instance;
 
    struct overlay_params params;
-   bool pipeline_statistics_enabled;
 
    bool first_line_printed;
 
@@ -84,6 +87,7 @@ struct instance_data {
    /* Dumping of frame stats to a file has been enabled and started. */
    bool capture_started;
 
+   string engineName, engineVersion;
    notify_thread notifier;
 };
 
@@ -103,9 +107,6 @@ struct device_data {
    struct queue_data *graphic_queue;
 
    std::vector<struct queue_data *> queues;
-
-   /* For a single frame */
-   struct frame_stat frame_stats;
 };
 
 /* Mapped from VkCommandBuffer */
@@ -116,10 +117,6 @@ struct command_buffer_data {
    VkCommandBufferLevel level;
 
    VkCommandBuffer cmd_buffer;
-   VkQueryPool timestamp_query_pool;
-   uint32_t query_index;
-
-   struct frame_stat stats;
 
    struct queue_data *queue_data;
 };
@@ -131,15 +128,12 @@ struct queue_data {
    VkQueue queue;
    VkQueueFlags flags;
    uint32_t family_index;
-   uint64_t timestamp_mask;
-
-   VkFence queries_fence;
-
-   std::list<command_buffer_data *> running_command_buffer;
 };
 
 struct overlay_draw {
    VkCommandBuffer command_buffer;
+
+   VkSemaphore cross_engine_semaphore;
 
    VkSemaphore semaphore;
    VkFence fence;
@@ -211,20 +205,6 @@ struct swapchain_data {
    struct frame_stat accumulated_stats;
 };
 
-static const VkQueryPipelineStatisticFlags overlay_query_flags =
-   VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_VERTICES_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_INPUT_ASSEMBLY_PRIMITIVES_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_VERTEX_SHADER_INVOCATIONS_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_INVOCATIONS_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_GEOMETRY_SHADER_PRIMITIVES_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_CLIPPING_INVOCATIONS_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_CLIPPING_PRIMITIVES_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_FRAGMENT_SHADER_INVOCATIONS_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_TESSELLATION_CONTROL_SHADER_PATCHES_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_TESSELLATION_EVALUATION_SHADER_INVOCATIONS_BIT |
-   VK_QUERY_PIPELINE_STATISTIC_COMPUTE_SHADER_INVOCATIONS_BIT;
-#define OVERLAY_QUERY_COUNT (11)
-
 // single global lock, for simplicity
 std::mutex global_lock;
 typedef std::lock_guard<std::mutex> scoped_lock;
@@ -290,38 +270,6 @@ static VkLayerDeviceCreateInfo *get_device_chain_info(const VkDeviceCreateInfo *
    return NULL;
 }
 
-static struct VkBaseOutStructure *
-clone_chain(const struct VkBaseInStructure *chain)
-{
-   struct VkBaseOutStructure *head = NULL, *tail = NULL;
-
-   vk_foreach_struct_const(item, chain) {
-      size_t item_size = vk_structure_type_size(item);
-      struct VkBaseOutStructure *new_item =
-         (struct VkBaseOutStructure *)malloc(item_size);;
-
-      memcpy(new_item, item, item_size);
-
-      if (!head)
-         head = new_item;
-      if (tail)
-         tail->pNext = new_item;
-      tail = new_item;
-   }
-
-   return head;
-}
-
-static void
-free_chain(struct VkBaseOutStructure *chain)
-{
-   while (chain) {
-      void *node = chain;
-      chain = chain->pNext;
-      free(node);
-   }
-}
-
 /**/
 
 static struct instance_data *new_instance_data(VkInstance instance)
@@ -381,18 +329,8 @@ static struct queue_data *new_queue_data(VkQueue queue,
    data->device = device_data;
    data->queue = queue;
    data->flags = family_props->queueFlags;
-   data->timestamp_mask = (1ull << family_props->timestampValidBits) - 1;
    data->family_index = family_index;
    map_object(HKEY(data->queue), data);
-
-   /* Fence synchronizing access to queries on that queue. */
-   VkFenceCreateInfo fence_info = {};
-   fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-   fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-   VK_CHECK(device_data->vtable.CreateFence(device_data->device,
-                                            &fence_info,
-                                            NULL,
-                                            &data->queries_fence));
 
    if (data->flags & VK_QUEUE_GRAPHICS_BIT)
       device_data->graphic_queue = data;
@@ -402,8 +340,6 @@ static struct queue_data *new_queue_data(VkQueue queue,
 
 static void destroy_queue(struct queue_data *data)
 {
-   struct device_data *device_data = data->device;
-   device_data->vtable.DestroyFence(device_data->device, data->queries_fence, NULL);
    unmap_object(HKEY(data->queue));
    delete data;
 }
@@ -458,16 +394,12 @@ static void destroy_device_data(struct device_data *data)
 /**/
 static struct command_buffer_data *new_command_buffer_data(VkCommandBuffer cmd_buffer,
                                                            VkCommandBufferLevel level,
-                                                           VkQueryPool timestamp_query_pool,
-                                                           uint32_t query_index,
                                                            struct device_data *device_data)
 {
    struct command_buffer_data *data = new command_buffer_data();
    data->device = device_data;
    data->cmd_buffer = cmd_buffer;
    data->level = level;
-   data->timestamp_query_pool = timestamp_query_pool;
-   data->query_index = query_index;
    map_object(HKEY(data->cmd_buffer), data);
    return data;
 }
@@ -475,8 +407,6 @@ static struct command_buffer_data *new_command_buffer_data(VkCommandBuffer cmd_b
 static void destroy_command_buffer_data(struct command_buffer_data *data)
 {
    unmap_object(HKEY(data->cmd_buffer));
-   if (data->queue_data)
-      data->queue_data->running_command_buffer.remove(data);
    delete data;
 }
 
@@ -539,6 +469,8 @@ struct overlay_draw *get_overlay_draw(struct swapchain_data *data)
 
    VK_CHECK(device_data->vtable.CreateSemaphore(device_data->device, &sem_info,
                                                 NULL, &draw->semaphore));
+   VK_CHECK(device_data->vtable.CreateSemaphore(device_data->device, &sem_info,
+                                                NULL, &draw->cross_engine_semaphore));
 
    data->draws.push_back(draw);
 
@@ -782,7 +714,15 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
    // NVIDIA or Intel but maybe has Optimus
    if (vendorID == 0x8086
       || vendorID == 0x10de) {
-      if ((params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = checkNvidia())) {
+
+      bool nvSuccess = (checkNVML() && getNVMLInfo());
+
+#ifdef HAVE_XNVCTRL
+      if (!nvSuccess)
+         nvSuccess = checkXNVCtrl();
+#endif
+
+      if ((params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = nvSuccess)) {
          vendorID = 0x10de;
       }
    }
@@ -875,13 +815,19 @@ void init_system_info(){
 }
 
 void check_keybinds(struct overlay_params& params, struct swapchain_stats& sw_stats){
+   bool pressed = false; // FIXME just a placeholder until wayland support
    uint64_t now = os_time_get(); /* us */
    elapsedF2 = (double)(now - last_f2_press);
    elapsedF12 = (double)(now - last_f12_press);
    elapsedReloadCfg = (double)(now - reload_cfg_press);
   
   if (elapsedF2 >= 500000 && !params.output_file.empty()){
-     if (key_is_pressed(params.toggle_logging)){
+#ifdef HAVE_X11
+     pressed = key_is_pressed(params.toggle_logging);
+#else
+     pressed = false;
+#endif
+     if (pressed){
        last_f2_press = now;
        log_start = now;
        loggingOn = !loggingOn;
@@ -894,14 +840,24 @@ void check_keybinds(struct overlay_params& params, struct swapchain_stats& sw_st
    }
 
    if (elapsedF12 >= 500000){
-      if (key_is_pressed(params.toggle_hud)){
+#ifdef HAVE_X11
+      pressed = key_is_pressed(params.toggle_hud);
+#else
+      pressed = false;
+#endif
+      if (pressed){
          last_f12_press = now;
          params.no_display = !params.no_display;
       }
    }
 
    if (elapsedReloadCfg >= 500000){
-      if (key_is_pressed(params.reload_cfg)){
+#ifdef HAVE_X11
+      pressed = key_is_pressed(params.reload_cfg);
+#else
+      pressed = false;
+#endif
+      if (pressed){
          parse_overlay_config(&params, getenv("MANGOHUD_CONFIG"));
          reload_cfg_press = now;
       }
@@ -919,7 +875,7 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
    sw_stats.fps_data.push_back(fps);
 
    if (sw_stats.last_present_time) {
-        sw_stats.frames_stats[f_idx].stats[OVERLAY_PARAM_ENABLED_frame_timing] =
+        sw_stats.frames_stats[f_idx].stats[OVERLAY_PLOTS_frame_timing] =
             now - sw_stats.last_present_time;
    }
 
@@ -988,9 +944,6 @@ void update_hud_info(struct swapchain_stats& sw_stats, struct overlay_params& pa
       sw_stats.last_fps_update = now;
    }
 
-   // memset(&device_data->frame_stats, 0, sizeof(device_data->frame_stats));
-   // memset(&data->frame_stats, 0, sizeof(device_data->frame_stats));
-   
    sw_stats.last_present_time = now;
    sw_stats.n_frames++;
    sw_stats.n_frames_since_update++;
@@ -1008,15 +961,6 @@ static void snapshot_swapchain_frame(struct swapchain_data *data)
    //    control_client_check(device_data);
    //    process_control_socket(instance_data);
    // }
-
-   
-   // not currently used
-   // memset(&data->sw_stats.frames_stats[f_idx], 0, sizeof(data->sw_stats.frames_stats[f_idx]));
-   // for (int s = 0; s < OVERLAY_PARAM_ENABLED_MAX; s++) {
-      // data->sw_stats.frames_stats[f_idx].stats[s] += device_data->frame_stats.stats[s] + data->frame_stats.stats[s];
-      // data->accumulated_stats.stats[s] += device_data->frame_stats.stats[s] + data->frame_stats.stats[s];
-   // }
-
 }
 
 static float get_time_stat(void *_data, int _idx)
@@ -1082,8 +1026,30 @@ static void right_aligned_text(float off_x, const char *fmt, ...)
    ImGui::Text("%s", buffer);
 }
 
+float get_ticker_limited_pos(float pos, float tw, float& left_limit, float& right_limit)
+{
+   float cw = ImGui::GetContentRegionAvailWidth();
+   float new_pos_x = ImGui::GetCursorPosX();
+   left_limit = cw - tw + new_pos_x;
+   right_limit = new_pos_x;
+
+   if (cw < tw) {
+      new_pos_x += pos;
+      // acts as a delay before it starts scrolling again
+      if (new_pos_x < left_limit)
+         return left_limit;
+      else if (new_pos_x > right_limit)
+         return right_limit;
+      else
+         return new_pos_x;
+   }
+   return new_pos_x;
+}
+
 void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& window_size, bool is_vulkan)
 {
+   uint32_t f_idx = (data.n_frames - 1) % ARRAY_SIZE(data.frames_stats);
+   uint64_t frame_timing = data.frames_stats[f_idx].stats[OVERLAY_PLOTS_frame_timing];
    static float char_width = ImGui::CalcTextSize("A").x;
    window_size = ImVec2(params.width, params.height);
    unsigned width = ImGui::GetIO().DisplaySize.x;
@@ -1094,7 +1060,6 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
       if (params.enabled[OVERLAY_PARAM_ENABLED_time]){
          ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.00f), "%s", data.time.c_str());
       }
-
       ImGui::BeginTable("hud", params.tableCols);
       if (params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats]){
          ImGui::TableNextRow();
@@ -1197,7 +1162,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          right_aligned_text(char_width * 4, "%.2f", gpu_info.memoryUsed);
          ImGui::SameLine(0,1.0f);
          ImGui::PushFont(data.font1);
-         ImGui::Text("GB");
+         ImGui::Text("GiB");
          ImGui::PopFont();
          if (params.enabled[OVERLAY_PARAM_ENABLED_gpu_mem_clock]){
             ImGui::TableNextCell();
@@ -1215,7 +1180,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          right_aligned_text(char_width * 4, "%.2f", memused);
          ImGui::SameLine(0,1.0f);
          ImGui::PushFont(data.font1);
-         ImGui::Text("GB");
+         ImGui::Text("GiB");
          ImGui::PopFont();
       }
       auto engine_color = ImGui::ColorConvertU32ToFloat4(params.engine_color);
@@ -1251,7 +1216,7 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
       }
       if (params.enabled[OVERLAY_PARAM_ENABLED_fps]){
          ImGui::TableNextRow();
-         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.engine_color), "%s", is_vulkan ? engineName.c_str() : "OpenGL");
+         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.engine_color), "%s", is_vulkan ? data.engineName.c_str() : "OpenGL");
          ImGui::TableNextCell();
          right_aligned_text(char_width * 4, "%.0f", data.fps);
          ImGui::SameLine(0, 1.0f);
@@ -1271,9 +1236,9 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          ImGui::PushFont(data.font1);
          ImGui::Dummy(ImVec2(0, 8.0f));
          if (is_vulkan) {
-            if ((engineName == "DXVK" || engineName == "VKD3D")){
+            if ((data.engineName == "DXVK" || data.engineName == "VKD3D")){
                ImGui::TextColored(engine_color,
-                  "%s/%d.%d.%d", engineVersion.c_str(),
+                  "%s/%d.%d.%d", data.engineVersion.c_str(),
                   data.version_vk.major,
                   data.version_vk.minor,
                   data.version_vk.patch);
@@ -1287,6 +1252,10 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          } else {
             ImGui::TextColored(engine_color,
                "%d.%d", data.version_gl.major, data.version_gl.minor);
+         }
+         if (params.enabled[OVERLAY_PARAM_ENABLED_arch]){
+            ImGui::Dummy(ImVec2(0.0,5.0f));
+            ImGui::TextColored(engine_color, "%s", "" MANGOHUD_ARCH);
          }
          ImGui::PopFont();
       }
@@ -1305,65 +1274,107 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
          ImGui::PushFont(data.font1);
          ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(params.engine_color), "%s", "Frametime");
          ImGui::PopFont();
-      }
-      for (uint32_t s = 0; s < OVERLAY_PARAM_ENABLED_MAX; s++) {
-         if (!params.enabled[s] ||
-            s == OVERLAY_PARAM_ENABLED_fps ||
-            s == OVERLAY_PARAM_ENABLED_frame)
-            continue;
 
          char hash[40];
-         snprintf(hash, sizeof(hash), "##%s", overlay_param_names[s]);
-         data.stat_selector = (enum overlay_param_enabled) s;
+         snprintf(hash, sizeof(hash), "##%s", overlay_param_names[OVERLAY_PARAM_ENABLED_frame_timing]);
+         data.stat_selector = OVERLAY_PLOTS_frame_timing;
          data.time_dividor = 1000.0f;
-         if (s == OVERLAY_PARAM_ENABLED_gpu_timing)
-            data.time_dividor = 1000000.0f;
 
          ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-         if (s == OVERLAY_PARAM_ENABLED_frame_timing) {
-            double min_time = 0.0f;
-            double max_time = 50.0f;
-            ImGui::PlotLines(hash, get_time_stat, &data,
-                                 ARRAY_SIZE(data.frames_stats), 0,
-                                 NULL, min_time, max_time,
-                                 ImVec2(ImGui::GetContentRegionAvailWidth() - params.font_size * 2.2, 50));
-         }
+         double min_time = 0.0f;
+         double max_time = 50.0f;
+         ImGui::PlotLines(hash, get_time_stat, &data,
+                              ARRAY_SIZE(data.frames_stats), 0,
+                              NULL, min_time, max_time,
+                              ImVec2(ImGui::GetContentRegionAvailWidth() - params.font_size * 2.2, 50));
          ImGui::PopStyleColor();
       }
       if (params.enabled[OVERLAY_PARAM_ENABLED_frame_timing]){
          ImGui::SameLine(0,1.0f);
          ImGui::PushFont(data.font1);
-         ImGui::Text("%.1f ms", 1000 / data.fps);
+         ImGui::Text("%.1f ms", 1000 / data.fps); //frame_timing / 1000.f);
          ImGui::PopFont();
       }
+
+#ifdef HAVE_DBUS
+      {
+         scoped_lock lk(spotify.mutex);
+         if (spotify.valid) {
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8,0));
+            ImGui::Dummy(ImVec2(0.0f, 20.0f));
+            ImGui::PushFont(data.font1);
+
+            if (spotify.ticker.needs_recalc) {
+               spotify.ticker.tw0 = ImGui::CalcTextSize(spotify.title.c_str()).x;
+               spotify.ticker.tw1 = ImGui::CalcTextSize(spotify.artists.c_str()).x;
+               spotify.ticker.tw2 = ImGui::CalcTextSize(spotify.album.c_str()).x;
+               spotify.ticker.longest = std::max(std::max(
+                     spotify.ticker.tw0,
+                     spotify.ticker.tw1),
+                  spotify.ticker.tw2);
+               spotify.ticker.needs_recalc = false;
+            }
+
+            float new_pos, left_limit = 0, right_limit = 0;
+            get_ticker_limited_pos(spotify.ticker.pos, spotify.ticker.longest, left_limit, right_limit);
+
+            if (spotify.ticker.pos < left_limit - g_overflow * .5f) {
+               spotify.ticker.dir = -1;
+               spotify.ticker.pos = (left_limit - g_overflow * .5f) + 1.f /* random */;
+            } else if (spotify.ticker.pos > right_limit + g_overflow) {
+               spotify.ticker.dir = 1;
+               spotify.ticker.pos = (right_limit + g_overflow) - 1.f /* random */;
+            }
+
+            spotify.ticker.pos -= .5f * (frame_timing / 16666.7f) * spotify.ticker.dir;
+
+            new_pos = get_ticker_limited_pos(spotify.ticker.pos, spotify.ticker.tw0, left_limit, right_limit);
+            ImGui::SetCursorPosX(new_pos);
+            ImGui::Text("%s", spotify.title.c_str());
+
+            new_pos = get_ticker_limited_pos(spotify.ticker.pos, spotify.ticker.tw1, left_limit, right_limit);
+            ImGui::SetCursorPosX(new_pos);
+            ImGui::Text("%s", spotify.artists.c_str());
+            //ImGui::NewLine();
+            if (!spotify.album.empty()) {
+               new_pos = get_ticker_limited_pos(spotify.ticker.pos, spotify.ticker.tw2, left_limit, right_limit);
+               ImGui::SetCursorPosX(new_pos);
+               ImGui::Text("%s", spotify.album.c_str());
+            }
+            ImGui::PopFont();
+            ImGui::PopStyleVar();
+         }
+      }
+#endif
+
       window_size = ImVec2(window_size.x, ImGui::GetCursorPosY() + 10.0f);
       ImGui::End();
-   }
-   if(loggingOn){
-      ImGui::SetNextWindowBgAlpha(0.0);
-      ImGui::SetNextWindowSize(ImVec2(params.font_size * 13, params.font_size * 13), ImGuiCond_Always);
-      ImGui::SetNextWindowPos(ImVec2(width - params.font_size * 13,
-                                    0),
-                                    ImGuiCond_Always);
-      ImGui::Begin("Logging", &open, ImGuiWindowFlags_NoDecoration);
-      ImGui::Text("Logging...");
-      ImGui::Text("Elapsed: %isec", int((elapsedLog) / 1000000));
-      ImGui::End();
-   }
-   if (params.enabled[OVERLAY_PARAM_ENABLED_crosshair]){
-      ImGui::SetNextWindowBgAlpha(0.0);
-      ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
-      ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-      ImGui::Begin("Logging", &open, ImGuiWindowFlags_NoDecoration);
-      ImVec2 horiz = ImVec2(width / 2 - (params.crosshair_size / 2), height / 2);
-      ImVec2 vert = ImVec2(width / 2, height / 2 - (params.crosshair_size / 2));
-      ImGui::GetWindowDrawList()->AddLine(horiz,
-         ImVec2(horiz.x + params.crosshair_size, horiz.y + 0),
-         params.crosshair_color, 2.0f);
-      ImGui::GetWindowDrawList()->AddLine(vert,
-         ImVec2(vert.x + 0, vert.y + params.crosshair_size),
-         params.crosshair_color, 2.0f);
-      ImGui::End();
+      if(loggingOn){
+         ImGui::SetNextWindowBgAlpha(0.0);
+         ImGui::SetNextWindowSize(ImVec2(params.font_size * 13, params.font_size * 13), ImGuiCond_Always);
+         ImGui::SetNextWindowPos(ImVec2(width - params.font_size * 13,
+                                       0),
+                                       ImGuiCond_Always);
+         ImGui::Begin("Logging", &open, ImGuiWindowFlags_NoDecoration);
+         ImGui::Text("Logging...");
+         ImGui::Text("Elapsed: %isec", int((elapsedLog) / 1000000));
+         ImGui::End();
+      }
+      if (params.enabled[OVERLAY_PARAM_ENABLED_crosshair]){
+         ImGui::SetNextWindowBgAlpha(0.0);
+         ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
+         ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+         ImGui::Begin("Logging", &open, ImGuiWindowFlags_NoDecoration);
+         ImVec2 horiz = ImVec2(width / 2 - (params.crosshair_size / 2), height / 2);
+         ImVec2 vert = ImVec2(width / 2, height / 2 - (params.crosshair_size / 2));
+         ImGui::GetWindowDrawList()->AddLine(horiz,
+            ImVec2(horiz.x + params.crosshair_size, horiz.y + 0),
+            params.crosshair_color, 2.0f);
+         ImGui::GetWindowDrawList()->AddLine(vert,
+            ImVec2(vert.x + 0, vert.y + params.crosshair_size),
+            params.crosshair_color, 2.0f);
+         ImGui::End();
+      }
    }
 }
 
@@ -1735,20 +1746,49 @@ static struct overlay_draw *render_swapchain_display(struct swapchain_data *data
 
    device_data->vtable.EndCommandBuffer(draw->command_buffer);
 
-   // wait in the fragment stage until the swapchain image is ready
-   std::vector<VkPipelineStageFlags> stages_wait(n_wait_semaphores, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+   /* When presenting on a different queue than where we're drawing the
+    * overlay *AND* when the application does not provide a semaphore to
+    * vkQueuePresent, insert our own cross engine synchronization
+    * semaphore.
+    */
+   if (n_wait_semaphores == 0 && device_data->graphic_queue->queue != present_queue->queue) {
+      VkPipelineStageFlags stages_wait = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+      VkSubmitInfo submit_info = {};
+      submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+      submit_info.commandBufferCount = 0;
+      submit_info.pWaitDstStageMask = &stages_wait;
+      submit_info.waitSemaphoreCount = 0;
+      submit_info.signalSemaphoreCount = 1;
+      submit_info.pSignalSemaphores = &draw->cross_engine_semaphore;
 
-   VkSubmitInfo submit_info = {};
-   submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-   submit_info.commandBufferCount = 1;
-   submit_info.pCommandBuffers = &draw->command_buffer;
-   submit_info.pWaitDstStageMask = stages_wait.data();
-   submit_info.waitSemaphoreCount = n_wait_semaphores;
-   submit_info.pWaitSemaphores = wait_semaphores;
-   submit_info.signalSemaphoreCount = 1;
-   submit_info.pSignalSemaphores = &draw->semaphore;
+      device_data->vtable.QueueSubmit(present_queue->queue, 1, &submit_info, VK_NULL_HANDLE);
 
-   device_data->vtable.QueueSubmit(device_data->graphic_queue->queue, 1, &submit_info, draw->fence);
+      submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+      submit_info.commandBufferCount = 1;
+      submit_info.pWaitDstStageMask = &stages_wait;
+      submit_info.pCommandBuffers = &draw->command_buffer;
+      submit_info.waitSemaphoreCount = 1;
+      submit_info.pWaitSemaphores = &draw->cross_engine_semaphore;
+      submit_info.signalSemaphoreCount = 1;
+      submit_info.pSignalSemaphores = &draw->semaphore;
+
+      device_data->vtable.QueueSubmit(device_data->graphic_queue->queue, 1, &submit_info, draw->fence);
+   } else {
+      // wait in the fragment stage until the swapchain image is ready
+      std::vector<VkPipelineStageFlags> stages_wait(n_wait_semaphores, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+
+      VkSubmitInfo submit_info = {};
+      submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+      submit_info.commandBufferCount = 1;
+      submit_info.pCommandBuffers = &draw->command_buffer;
+      submit_info.pWaitDstStageMask = stages_wait.data();
+      submit_info.waitSemaphoreCount = n_wait_semaphores;
+      submit_info.pWaitSemaphores = wait_semaphores;
+      submit_info.signalSemaphoreCount = 1;
+      submit_info.pSignalSemaphores = &draw->semaphore;
+
+      device_data->vtable.QueueSubmit(device_data->graphic_queue->queue, 1, &submit_info, draw->fence);
+   }
 
    return draw;
 }
@@ -2163,6 +2203,7 @@ static void shutdown_swapchain_data(struct swapchain_data *data)
    struct device_data *device_data = data->device;
 
    for (auto draw : data->draws) {
+      device_data->vtable.DestroySemaphore(device_data->device, draw->cross_engine_semaphore, NULL);
       device_data->vtable.DestroySemaphore(device_data->device, draw->semaphore, NULL);
       device_data->vtable.DestroyFence(device_data->device, draw->fence, NULL);
       device_data->vtable.DestroyBuffer(device_data->device, draw->vertex_buffer, NULL);
@@ -2243,6 +2284,8 @@ static VkResult overlay_CreateSwapchainKHR(
    swapchain_data->sw_stats.version_vk.major = VK_VERSION_MAJOR(device_data->properties.apiVersion);
    swapchain_data->sw_stats.version_vk.minor = VK_VERSION_MINOR(device_data->properties.apiVersion);
    swapchain_data->sw_stats.version_vk.patch = VK_VERSION_PATCH(device_data->properties.apiVersion);
+   swapchain_data->sw_stats.engineName    = device_data->instance->engineName;
+   swapchain_data->sw_stats.engineVersion = device_data->instance->engineVersion;
 
    return result;
 }
@@ -2276,42 +2319,6 @@ static VkResult overlay_QueuePresentKHR(
     const VkPresentInfoKHR*                     pPresentInfo)
 {
    struct queue_data *queue_data = FIND(struct queue_data, queue);
-   struct device_data *device_data = queue_data->device;
-
-   device_data->frame_stats.stats[OVERLAY_PARAM_ENABLED_frame]++;
-
-   if (!queue_data->running_command_buffer.empty()) {
-      /* Before getting the query results, make sure the operations have
-       * completed.
-       */
-      VK_CHECK(device_data->vtable.ResetFences(device_data->device,
-                                               1, &queue_data->queries_fence));
-      VK_CHECK(device_data->vtable.QueueSubmit(queue, 0, NULL, queue_data->queries_fence));
-      VK_CHECK(device_data->vtable.WaitForFences(device_data->device,
-                                                 1, &queue_data->queries_fence,
-                                                 VK_FALSE, UINT64_MAX));
-
-      /* Now get the results. */
-      while (!queue_data->running_command_buffer.empty()) {
-         auto cmd_buffer_data = queue_data->running_command_buffer.front();
-         queue_data->running_command_buffer.pop_front();
-
-         if (cmd_buffer_data->timestamp_query_pool) {
-            uint64_t gpu_timestamps[2] = { 0 };
-            VK_CHECK(device_data->vtable.GetQueryPoolResults(device_data->device,
-                                                             cmd_buffer_data->timestamp_query_pool,
-                                                             cmd_buffer_data->query_index * 2, 2,
-                                                             2 * sizeof(uint64_t), gpu_timestamps, sizeof(uint64_t),
-                                                             VK_QUERY_RESULT_WAIT_BIT | VK_QUERY_RESULT_64_BIT));
-
-            gpu_timestamps[0] &= queue_data->timestamp_mask;
-            gpu_timestamps[1] &= queue_data->timestamp_mask;
-            device_data->frame_stats.stats[OVERLAY_PARAM_ENABLED_gpu_timing] +=
-               (gpu_timestamps[1] - gpu_timestamps[0]) *
-               device_data->properties.limits.timestampPeriod;
-         }
-      }
-   }
 
    /* Otherwise we need to add our overlay drawing semaphore to the list of
     * semaphores to wait on. If we don't do that the presented picture might
@@ -2346,10 +2353,7 @@ static VkResult overlay_QueuePresentKHR(
          present_info.waitSemaphoreCount = 1;
       }
 
-      uint64_t ts0 = os_time_get();
       VkResult chain_result = queue_data->device->vtable.QueuePresentKHR(queue, &present_info);
-      uint64_t ts1 = os_time_get();
-      swapchain_data->frame_stats.stats[OVERLAY_PARAM_ENABLED_present_timing] += ts1 - ts0;
       if (pPresentInfo->pResults)
          pPresentInfo->pResults[i] = chain_result;
       if (chain_result != VK_SUCCESS && result == VK_SUCCESS)
@@ -2373,58 +2377,8 @@ static VkResult overlay_BeginCommandBuffer(
       FIND(struct command_buffer_data, commandBuffer);
    struct device_data *device_data = cmd_buffer_data->device;
 
-   memset(&cmd_buffer_data->stats, 0, sizeof(cmd_buffer_data->stats));
-
-   /* We don't record any query in secondary command buffers, just make sure
-    * we have the right inheritance.
-    */
-   if (cmd_buffer_data->level == VK_COMMAND_BUFFER_LEVEL_SECONDARY) {
-      VkCommandBufferBeginInfo *begin_info = (VkCommandBufferBeginInfo *)
-         clone_chain((const struct VkBaseInStructure *)pBeginInfo);
-      VkCommandBufferInheritanceInfo *parent_inhe_info = (VkCommandBufferInheritanceInfo *)
-         vk_find_struct(begin_info, COMMAND_BUFFER_INHERITANCE_INFO);
-      VkCommandBufferInheritanceInfo inhe_info = {
-         VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO,
-         NULL,
-         VK_NULL_HANDLE,
-         0,
-         VK_NULL_HANDLE,
-         VK_FALSE,
-         0,
-         overlay_query_flags,
-      };
-
-      if (parent_inhe_info)
-         parent_inhe_info->pipelineStatistics = overlay_query_flags;
-      else {
-         inhe_info.pNext = begin_info->pNext;
-         begin_info->pNext = &inhe_info;
-      }
-
-      VkResult result = device_data->vtable.BeginCommandBuffer(commandBuffer, pBeginInfo);
-
-      if (!parent_inhe_info)
-         begin_info->pNext = inhe_info.pNext;
-
-      free_chain((struct VkBaseOutStructure *)begin_info);
-
-      return result;
-   }
-
    /* Otherwise record a begin query as first command. */
    VkResult result = device_data->vtable.BeginCommandBuffer(commandBuffer, pBeginInfo);
-
-   if (result == VK_SUCCESS) {
-      if (cmd_buffer_data->timestamp_query_pool) {
-         device_data->vtable.CmdResetQueryPool(commandBuffer,
-                                               cmd_buffer_data->timestamp_query_pool,
-                                               cmd_buffer_data->query_index * 2, 2);
-         device_data->vtable.CmdWriteTimestamp(commandBuffer,
-                                               VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                               cmd_buffer_data->timestamp_query_pool,
-                                               cmd_buffer_data->query_index * 2);
-      }
-   }
 
    return result;
 }
@@ -2435,13 +2389,6 @@ static VkResult overlay_EndCommandBuffer(
    struct command_buffer_data *cmd_buffer_data =
       FIND(struct command_buffer_data, commandBuffer);
    struct device_data *device_data = cmd_buffer_data->device;
-
-   if (cmd_buffer_data->timestamp_query_pool) {
-      device_data->vtable.CmdWriteTimestamp(commandBuffer,
-                                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                                            cmd_buffer_data->timestamp_query_pool,
-                                            cmd_buffer_data->query_index * 2 + 1);
-   }
 
    return device_data->vtable.EndCommandBuffer(commandBuffer);
 }
@@ -2454,8 +2401,6 @@ static VkResult overlay_ResetCommandBuffer(
       FIND(struct command_buffer_data, commandBuffer);
    struct device_data *device_data = cmd_buffer_data->device;
 
-   memset(&cmd_buffer_data->stats, 0, sizeof(cmd_buffer_data->stats));
-
    return device_data->vtable.ResetCommandBuffer(commandBuffer, flags);
 }
 
@@ -2467,15 +2412,6 @@ static void overlay_CmdExecuteCommands(
    struct command_buffer_data *cmd_buffer_data =
       FIND(struct command_buffer_data, commandBuffer);
    struct device_data *device_data = cmd_buffer_data->device;
-
-   /* Add the stats of the executed command buffers to the primary one. */
-   for (uint32_t c = 0; c < commandBufferCount; c++) {
-      struct command_buffer_data *sec_cmd_buffer_data =
-         FIND(struct command_buffer_data, pCommandBuffers[c]);
-
-      for (uint32_t s = 0; s < OVERLAY_PARAM_ENABLED_MAX; s++)
-         cmd_buffer_data->stats.stats[s] += sec_cmd_buffer_data->stats.stats[s];
-   }
 
    device_data->vtable.CmdExecuteCommands(commandBuffer, commandBufferCount, pCommandBuffers);
 }
@@ -2491,28 +2427,10 @@ static VkResult overlay_AllocateCommandBuffers(
    if (result != VK_SUCCESS)
       return result;
 
-   VkQueryPool timestamp_query_pool = VK_NULL_HANDLE;
-   if (device_data->instance->params.enabled[OVERLAY_PARAM_ENABLED_gpu_timing]) {
-      VkQueryPoolCreateInfo pool_info = {
-         VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
-         NULL,
-         0,
-         VK_QUERY_TYPE_TIMESTAMP,
-         pAllocateInfo->commandBufferCount * 2,
-         0,
-      };
-      VK_CHECK(device_data->vtable.CreateQueryPool(device_data->device, &pool_info,
-                                                   NULL, &timestamp_query_pool));
-   }
-
    for (uint32_t i = 0; i < pAllocateInfo->commandBufferCount; i++) {
       new_command_buffer_data(pCommandBuffers[i], pAllocateInfo->level,
-                              timestamp_query_pool,
-                              i, device_data);
+                              device_data);
    }
-
-   if (timestamp_query_pool)
-      map_object(HKEY(timestamp_query_pool), (void *)(uintptr_t) pAllocateInfo->commandBufferCount);
 
    return result;
 }
@@ -2532,14 +2450,6 @@ static void overlay_FreeCommandBuffers(
       if (!cmd_buffer_data)
          continue;
 
-      uint64_t count = (uintptr_t)find_object_data(HKEY(cmd_buffer_data->timestamp_query_pool));
-      if (count == 1) {
-         unmap_object(HKEY(cmd_buffer_data->timestamp_query_pool));
-         device_data->vtable.DestroyQueryPool(device_data->device,
-                                              cmd_buffer_data->timestamp_query_pool, NULL);
-      } else if (count != 0) {
-         map_object(HKEY(cmd_buffer_data->timestamp_query_pool), (void *)(uintptr_t)(count - 1));
-      }
       destroy_command_buffer_data(cmd_buffer_data);
    }
 
@@ -2555,32 +2465,6 @@ static VkResult overlay_QueueSubmit(
 {
    struct queue_data *queue_data = FIND(struct queue_data, queue);
    struct device_data *device_data = queue_data->device;
-
-   for (uint32_t s = 0; s < submitCount; s++) {
-      for (uint32_t c = 0; c < pSubmits[s].commandBufferCount; c++) {
-         struct command_buffer_data *cmd_buffer_data =
-            FIND(struct command_buffer_data, pSubmits[s].pCommandBuffers[c]);
-
-         /* Merge the submitted command buffer stats into the device. */
-         for (uint32_t st = 0; st < OVERLAY_PARAM_ENABLED_MAX; st++)
-            device_data->frame_stats.stats[st] += cmd_buffer_data->stats.stats[st];
-
-         /* Attach the command buffer to the queue so we remember to read its
-          * pipeline statistics & timestamps at QueuePresent().
-          */
-         if (!cmd_buffer_data->timestamp_query_pool)
-            continue;
-
-         auto& q = queue_data->running_command_buffer;
-         if (std::find(q.begin(), q.end(), cmd_buffer_data) == q.end()) {
-            cmd_buffer_data->queue_data = queue_data;
-            q.push_back(cmd_buffer_data);
-         } else {
-            fprintf(stderr, "Command buffer submitted multiple times before present.\n"
-                    "This could lead to invalid data.\n");
-         }
-      }
-   }
 
    return device_data->vtable.QueueSubmit(queue, submitCount, pSubmits, fence);
 }
@@ -2612,10 +2496,6 @@ static VkResult overlay_CreateDevice(
 
    if (pCreateInfo->pEnabledFeatures)
       device_features = *(pCreateInfo->pEnabledFeatures);
-   if (instance_data->pipeline_statistics_enabled) {
-      device_features.inheritedQueries = true;
-      device_features.pipelineStatisticsQuery = true;
-   }
    device_info.pEnabledFeatures = &device_features;
 
 
@@ -2660,6 +2540,7 @@ static VkResult overlay_CreateInstance(
       get_instance_chain_info(pCreateInfo, VK_LAYER_LINK_INFO);
       
 
+   std::string engineName, engineVersion;
    const char* pEngineName = nullptr;
    if (pCreateInfo->pApplicationInfo)
       pEngineName = pCreateInfo->pApplicationInfo->pEngineName;
@@ -2699,9 +2580,20 @@ static VkResult overlay_CreateInstance(
 
    parse_overlay_config(&instance_data->params, getenv("MANGOHUD_CONFIG"));
    instance_data->notifier.params = &instance_data->params;
-   pthread_create(&fileChange, NULL, &fileChanged, &instance_data->notifier);
+   start_notifier(instance_data->notifier);
 
    init_cpu_stats(instance_data->params);
+
+#ifdef HAVE_DBUS
+   if (instance_data->params.enabled[OVERLAY_PARAM_ENABLED_media_player]) {
+      try {
+         dbusmgr::dbus_mgr.init();
+         get_spotify_metadata(dbusmgr::dbus_mgr, spotify);
+      } catch (std::runtime_error& e) {
+         std::cerr << "Failed to get initial Spotify metadata: " << e.what() << std::endl;
+      }
+   }
+#endif
 
    // Adjust height for DXVK/VKD3D version number
    if (engineName == "DXVK" || engineName == "VKD3D"){
@@ -2711,6 +2603,9 @@ static VkResult overlay_CreateInstance(
          instance_data->params.height += 24 / 2;
       }
    }
+
+   instance_data->engineName = engineName;
+   instance_data->engineVersion = engineVersion;
 
    return result;
 }
@@ -2722,7 +2617,7 @@ static void overlay_DestroyInstance(
    struct instance_data *instance_data = FIND(struct instance_data, instance);
    instance_data_map_physical_devices(instance_data, false);
    instance_data->vtable.DestroyInstance(instance, pAllocator);
-   instance_data->notifier.quit = true;
+   stop_notifier(instance_data->notifier);
    destroy_instance_data(instance_data);
 }
 
@@ -2756,8 +2651,46 @@ static const struct {
 #undef ADD_HOOK
 };
 
+static bool checkBlacklisted()
+{
+   std::vector<std::string> blacklist {
+      "Battle.net.exe",
+      "EpicGamesLauncher.exe",
+      "IGOProxy.exe",
+      "IGOProxy64.exe",
+      "Origin.exe",
+      "OriginThinSetupInternal.exe",
+      "Steam.exe",
+      "BethesdaNetLauncher.exe",
+   };
+
+#ifdef _GNU_SOURCE_OFF
+   std::string p(program_invocation_name);
+   std::string procName = p.substr(p.find_last_of("/\\") + 1);
+#else
+   std::string p = get_exe_path();
+   std::string procName;
+   if (ends_with(p, "wine-preloader") || ends_with(p, "wine64-preloader")) {
+      get_wine_exe_name(procName, true);
+   } else {
+      procName = p.substr(p.find_last_of("/\\") + 1);
+   }
+#endif
+
+   return std::find(blacklist.begin(), blacklist.end(), procName) != blacklist.end();
+}
+
+static bool isBlacklisted = checkBlacklisted();
+
 static void *find_ptr(const char *name)
 {
+    std::string f(name);
+
+    if (isBlacklisted && (f != "vkCreateInstance" && f != "vkDestroyInstance" && f != "vkCreateDevice" && f != "vkDestroyDevice"))
+    {
+        return NULL;
+    }
+
    for (uint32_t i = 0; i < ARRAY_SIZE(name_to_funcptr_map); i++) {
       if (strcmp(name, name_to_funcptr_map[i].name) == 0)
          return name_to_funcptr_map[i].ptr;

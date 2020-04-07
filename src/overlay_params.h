@@ -34,7 +34,10 @@ extern "C" {
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <X11/Xlib.h>
+
+#ifndef KeySym
+typedef unsigned long KeySym;
+#endif
 
 #define RGBGetBValue(rgb)   (rgb & 0x000000FF)
 #define RGBGetGValue(rgb)   ((rgb >> 8) & 0x000000FF)
@@ -44,10 +47,7 @@ extern "C" {
 
 #define OVERLAY_PARAMS                               \
    OVERLAY_PARAM_BOOL(fps)                           \
-   OVERLAY_PARAM_BOOL(frame)                         \
    OVERLAY_PARAM_BOOL(frame_timing)                  \
-   OVERLAY_PARAM_BOOL(present_timing)                \
-   OVERLAY_PARAM_BOOL(gpu_timing)                    \
    OVERLAY_PARAM_BOOL(core_load)                     \
    OVERLAY_PARAM_BOOL(cpu_temp)                      \
    OVERLAY_PARAM_BOOL(gpu_temp)                      \
@@ -66,6 +66,8 @@ extern "C" {
    OVERLAY_PARAM_BOOL(one_percent)                   \
    OVERLAY_PARAM_BOOL(ninenty_seventh)               \
    OVERLAY_PARAM_BOOL(avg_fps)                       \
+   OVERLAY_PARAM_BOOL(arch)                          \
+   OVERLAY_PARAM_BOOL(media_player)                  \
    OVERLAY_PARAM_CUSTOM(fps_sampling_period)         \
    OVERLAY_PARAM_CUSTOM(output_file)                 \
    OVERLAY_PARAM_CUSTOM(font_file)                   \
@@ -107,6 +109,11 @@ enum overlay_param_position {
    LAYER_POSITION_TOP_RIGHT,
    LAYER_POSITION_BOTTOM_LEFT,
    LAYER_POSITION_BOTTOM_RIGHT,
+};
+
+enum overlay_plots {
+    OVERLAY_PLOTS_frame_timing,
+    OVERLAY_PLOTS_MAX,
 };
 
 enum overlay_param_enabled {
