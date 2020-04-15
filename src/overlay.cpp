@@ -858,6 +858,7 @@ void check_keybinds(struct overlay_params& params){
 #else
      pressed = false;
 #endif
+     pressed |= input_key_is_pressed(params.toggle_logging);
      if (pressed){
        last_f2_press = now;
        log_start = now;
@@ -875,6 +876,7 @@ void check_keybinds(struct overlay_params& params){
 #else
       pressed = false;
 #endif
+      pressed |= input_key_is_pressed(params.toggle_hud);
       if (pressed){
          last_f12_press = now;
          params.no_display = !params.no_display;
@@ -887,6 +889,7 @@ void check_keybinds(struct overlay_params& params){
 #else
       pressed = false;
 #endif
+      pressed |= input_key_is_pressed(params.reload_cfg);
       if (pressed){
          parse_overlay_config(&params, getenv("MANGOHUD_CONFIG"));
          reload_cfg_press = now;
@@ -2580,6 +2583,8 @@ static VkResult overlay_CreateInstance(
 
    instance_data->engineName = engineName;
    instance_data->engineVersion = engineVersion;
+
+   start_input(instance_data->params);
 
    return result;
 }

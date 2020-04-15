@@ -99,7 +99,7 @@ parse_toggle_hud(const char *str)
 {
    if (g_x11->IsLoaded())
       return g_x11->XStringToKeysym(str);
-   return 0;
+   return XK_F12;
 }
 
 static KeySym
@@ -107,7 +107,7 @@ parse_toggle_logging(const char *str)
 {
    if (g_x11->IsLoaded())
       return g_x11->XStringToKeysym(str);
-   return 0;
+   return XK_F2;
 }
 
 static KeySym
@@ -115,7 +115,7 @@ parse_reload_cfg(const char *str)
 {
    if (g_x11->IsLoaded())
       return g_x11->XStringToKeysym(str);
-   return 0;
+   return XK_F4;
 }
 #else
 #define parse_toggle_hud(x)      0

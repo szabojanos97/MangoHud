@@ -95,6 +95,8 @@ vulkan_wsi_deps = []
 dep_x11 = dependency('x11', required: get_option('with_x11'))
 dep_wayland_client = dependency('wayland-client',
     required: get_option('with_wayland'), version : '>=1.11')
+libinput_dep = dependency('libinput', required: true) # get_option('with_wayland'))
+libudev_dep = dependency('libudev', required: true) # get_option('with_wayland'))
 
 if dep_x11.found()
   vulkan_wsi_args += ['-DVK_USE_PLATFORM_XLIB_KHR']

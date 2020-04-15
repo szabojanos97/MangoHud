@@ -53,6 +53,7 @@ vklayer_files = files(
   'notify.cpp',
   'elfhacks.cpp',
   'real_dlsym.cpp',
+  'keybinds_libinput.cpp'
 )
 
 opengl_files = files(
@@ -127,6 +128,8 @@ vklayer_mesa_overlay = shared_library(
   dependencies : [
     vulkan_wsi_deps, 
     libimgui_core_dep,
+    libinput_dep,
+    libudev_dep,
     dbus_dep,
     dep_dl,
     dep_pthread,

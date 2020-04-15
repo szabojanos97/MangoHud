@@ -1,6 +1,7 @@
 #pragma once
 #include "shared_x11.h"
 #include "loaders/loader_x11.h"
+#include "keybinds_libinput.h"
 
 #ifndef KeySym
 typedef unsigned long KeySym;
