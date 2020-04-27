@@ -227,5 +227,13 @@ if cc.sizeof('void*') == 4
   pre_args += '-DMANGOHUD_ARCH="32bit"'
 endif
 
+if ['windows', 'mingw'].contains(host_machine.system())
+  lib_dxgi        = cc.find_library('dxgi')
+  lib_d3d11       = cc.find_library('d3d11')
+  lib_d3dcompiler = cc.find_library('d3dcompiler')
+  lib_xinput      = cc.find_library('xinput')
+  subdir('modules/minhook')
+endif
+
 subdir('modules/ImGui')
 subdir('src')

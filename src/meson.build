@@ -70,6 +70,12 @@ endif
 
 if ['windows', 'mingw'].contains(host_machine.system())
   vklayer_files += files(
+    'kiero/main.cpp',
+    'kiero/kiero.cpp',
+    'kiero/d3d11_impl.cpp',
+    'kiero/shared.cpp',
+    'kiero/imgui_impl_dx11.cpp',
+    'kiero/imgui_impl_win32.cpp',
     'file_utils_win32.cpp',
     'loaders/loader_nvml_win32.cpp',
     'cpu_win32.cpp',
@@ -196,7 +202,11 @@ vklayer_mesa_overlay = shared_library(
     dep_dl,
     dep_pthread,
     dep_vulkan,
-    minhook_dep],
+    minhook_dep,
+    lib_xinput,
+    lib_d3dcompiler,
+    lib_d3d11,
+    lib_dxgi],
   include_directories : [inc_common, inc_opengl],
   link_args : cc.get_supported_link_arguments(['-Wl,-Bsymbolic-functions', '-Wl,-z,relro']),
   install_dir : libdir_mangohud,
