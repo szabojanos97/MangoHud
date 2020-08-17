@@ -435,6 +435,34 @@ parse_overlay_env(struct overlay_params *params,
 }
 
 void
+set_defaults(struct overlay_params *params)
+{
+   params->enabled[OVERLAY_PARAM_ENABLED_fps] = true;
+   params->enabled[OVERLAY_PARAM_ENABLED_frame_timing] = true;
+   params->enabled[OVERLAY_PARAM_ENABLED_cpu_stats] = true;
+   params->enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = true;
+
+   // False anyway
+   params->enabled[OVERLAY_PARAM_ENABLED_core_load] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_cpu_temp] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_gpu_temp] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_ram] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_vram] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_read_cfg] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_io_read] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_io_write] = false;
+   params->enabled[OVERLAY_PARAM_ENABLED_wine] = false;
+
+#ifdef HAVE_X11
+   params->toggle_hud = { XK_Shift_R, XK_F12 };
+   params->toggle_logging = { XK_Shift_L, XK_F2 };
+   params->reload_cfg = { XK_Shift_L, XK_F4 };
+   params->upload_log = { XK_Shift_L, XK_F3 };
+   params->upload_logs = { XK_Control_L, XK_F3 };
+#endif
+}
+
+void
 parse_overlay_config(struct overlay_params *params,
                   const char *env)
 {
@@ -442,19 +470,6 @@ parse_overlay_config(struct overlay_params *params,
    *params = {};
 
    /* Visible by default */
-   params->enabled[OVERLAY_PARAM_ENABLED_fps] = true;
-   params->enabled[OVERLAY_PARAM_ENABLED_frame_timing] = true;
-   params->enabled[OVERLAY_PARAM_ENABLED_core_load] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_cpu_temp] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_gpu_temp] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_cpu_stats] = true;
-   params->enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = true;
-   params->enabled[OVERLAY_PARAM_ENABLED_ram] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_vram] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_read_cfg] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_io_read] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_io_write] = false;
-   params->enabled[OVERLAY_PARAM_ENABLED_wine] = false;
    params->fps_sampling_period = 500000; /* 500ms */
    params->width = 0;
    params->height = 140;
@@ -487,23 +502,13 @@ parse_overlay_config(struct overlay_params *params,
    params->render_mango = 0;
    params->benchmark_percentiles = { "97", "AVG", "1", "0.1" };
 
-#ifdef HAVE_X11
-   params->toggle_hud = { XK_Shift_R, XK_F12 };
-   params->toggle_logging = { XK_Shift_L, XK_F2 };
-   params->reload_cfg = { XK_Shift_L, XK_F4 };
-   params->upload_log = { XK_Shift_L, XK_F3 };
-   params->upload_logs = { XK_Control_L, XK_F3 };
-#endif
-
    // first pass with env var
    if (env)
       parse_overlay_env(params, env);
 
    bool read_cfg = params->enabled[OVERLAY_PARAM_ENABLED_read_cfg];
-   if (!env || read_cfg) {
-
-      // Get config options
-      parseConfigFile(*params);
+   // Get config options
+   if ((!env || read_cfg) && parseConfigFile(*params)) {
       if (params->options.find("full") != params->options.end() && params->options.find("full")->second != "0") {
 #define OVERLAY_PARAM_BOOL(name) \
             params->enabled[OVERLAY_PARAM_ENABLED_##name] = 1;
@@ -531,11 +536,12 @@ parse_overlay_config(struct overlay_params *params,
 #undef OVERLAY_PARAM_CUSTOM
          fprintf(stderr, "Unknown option '%s'\n", it.first.c_str());
       }
-
+   } else {
+      set_defaults(params);
    }
 
-   // second pass, override config file settings with MANGOHUD_CONFIG
-   if (env && read_cfg)
+   // second pass, override defaults or config file settings with MANGOHUD_CONFIG
+   if (env)
       parse_overlay_env(params, env);
 
    if (params->font_scale_media_player <= 0.f)

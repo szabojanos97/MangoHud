@@ -64,7 +64,7 @@ void enumerate_config_files(std::vector<std::string>& paths)
         program_name = "Unknown";
 }
 
-void parseConfigFile(overlay_params& params) {
+bool parseConfigFile(overlay_params& params) {
     params.options.clear();
     std::vector<std::string> paths;
     const char *cfg_file = getenv("MANGOHUD_CONFIGFILE");
@@ -91,6 +91,7 @@ void parseConfigFile(overlay_params& params) {
         }
         std::cerr << " [ ok ]" << std::endl;
         params.config_file_path = *p;
-        return;
+        return true;
     }
+    return false;
 }
