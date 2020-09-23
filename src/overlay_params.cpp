@@ -312,6 +312,7 @@ parse_font_glyph_ranges(const char *str)
 #define parse_alpha(s) parse_float(s)
 #define parse_permit_upload(s) parse_unsigned(s)
 #define parse_render_mango(s) parse_unsigned(s)
+#define parse_no_small_font(s) parse_unsigned(s) != 0
 
 #define parse_cpu_color(s) parse_color(s)
 #define parse_gpu_color(s) parse_color(s)
@@ -597,6 +598,8 @@ parse_overlay_config(struct overlay_params *params,
       } else {
          params->width = params->font_size * params->font_scale * 11.7;
       }
+      if (params->no_small_font)
+         params->width += 3 * params->font_size * params->font_scale;
    }
 
    // set frametime limit

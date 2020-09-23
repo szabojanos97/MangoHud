@@ -56,6 +56,7 @@ typedef unsigned long KeySym;
    OVERLAY_PARAM_CUSTOM(font_file)                   \
    OVERLAY_PARAM_CUSTOM(font_file_text)              \
    OVERLAY_PARAM_CUSTOM(font_glyph_ranges)           \
+   OVERLAY_PARAM_CUSTOM(no_small_font)               \
    OVERLAY_PARAM_CUSTOM(font_size)                   \
    OVERLAY_PARAM_CUSTOM(font_size_text)              \
    OVERLAY_PARAM_CUSTOM(font_scale)                  \
@@ -164,6 +165,7 @@ struct overlay_params {
    unsigned media_player_color;
    unsigned tableCols;
    unsigned render_mango;
+   bool no_small_font;
    float font_size, font_scale;
    float font_size_text;
    float font_scale_media_player;

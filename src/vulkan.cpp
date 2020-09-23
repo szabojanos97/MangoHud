@@ -1253,12 +1253,12 @@ void render_imgui(swapchain_stats& data, struct overlay_params& params, ImVec2& 
             ImGui::PlotHistogram(hash, get_time_stat, &data,
                                  ARRAY_SIZE(data.frames_stats), 0,
                                  NULL, min_time, max_time,
-                                 ImVec2(ImGui::GetContentRegionAvailWidth() - real_font_size.x * 2.2, 50));
+                                 ImVec2(ImGui::GetContentRegionAvailWidth() - real_font_size.x * 2.2 * (params.no_small_font ? 2 : 1), 50));
          } else {
             ImGui::PlotLines(hash, get_time_stat, &data,
                      ARRAY_SIZE(data.frames_stats), 0,
                      NULL, min_time, max_time,
-                     ImVec2(ImGui::GetContentRegionAvailWidth() - real_font_size.x * 2.2, 50));
+                     ImVec2(ImGui::GetContentRegionAvailWidth() - real_font_size.x * 2.2 * (params.no_small_font ? 2 : 1), 50));
          }
          ImGui::PopStyleColor();
       }
