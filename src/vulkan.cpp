@@ -530,6 +530,8 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
        || gpu.find("AMD") != std::string::npos) {
       string path;
       string drm = "/sys/class/drm/";
+      getAmdGpuInfo_actual = getAmdGpuInfo;
+      bool using_libdrm = false;
 
       auto dirs = ls(drm.c_str(), "card");
       for (auto& dir : dirs) {
@@ -558,7 +560,33 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
          }
 
 #ifndef NDEBUG
-           std::cerr << "using amdgpu path: " << path << std::endl;
+         std::cerr << "using amdgpu path: " << path << std::endl;
+#endif
+
+#ifdef HAVE_LIBDRM_AMDGPU
+         /* Try to open gpu with libdrm and authenticate with XCB */
+         std::string pfx_pci_bus;
+         if (pci_bus_parsed && pci_dev)
+            pfx_pci_bus = "pci:" + params.pci_dev;
+         else {
+            string pci_device = read_symlink(path.c_str());
+            auto p = pci_device.find_last_of("/");
+            if (p != std::string::npos && p + 1 < pci_device.size()) {
+               pfx_pci_bus = "pci:" + pci_device.substr(p + 1);
+            }
+         }
+
+         if (amdgpu_open(pfx_pci_bus.c_str())) {
+            vendorID = 0x1002;
+            using_libdrm = true;
+            getAmdGpuInfo_actual = getAmdGpuInfo_libdrm;
+#ifndef NDEBUG
+            std::cerr << "MANGOHUD: using libdrm_amdgpu\n";
+#endif
+            break;
+         } else {
+            std::cerr << "MANGOHUD: Failed to open amdgpu device '" << pfx_pci_bus << "' with libdrm, falling back to using hwmon sysfs.\n";
+         }
 #endif
 
          if (!amdgpu.busy)
@@ -586,7 +614,7 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
       }
 
       // don't bother then
-      if (!amdgpu.busy && !amdgpu.temp && !amdgpu.vram_total && !amdgpu.vram_used) {
+      if (!using_libdrm && !amdgpu.busy && !amdgpu.temp && !amdgpu.vram_total && !amdgpu.vram_used) {
          params.enabled[OVERLAY_PARAM_ENABLED_gpu_stats] = false;
       }
    }
