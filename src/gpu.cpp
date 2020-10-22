@@ -134,19 +134,19 @@ void getAmdGpuInfo(){
 #define DRM_ATLEAST_VERSION(maj, min) \
     (amdgpu_dev->drm_major > maj || (amdgpu_dev->drm_major == maj && amdgpu_dev->drm_minor >= min))
 
-struct amdgpu_state
+struct amdgpu_handles
 {
     amdgpu_device_handle dev;
     int fd;
     uint32_t drm_major, drm_minor;
 };
 
-void amdgpu_cleanup(amdgpu_state *state){
-    amdgpu_device_deinitialize(state->dev);
-    close(state->fd);
+static void amdgpu_cleanup(amdgpu_handles *h){
+    amdgpu_device_deinitialize(h->dev);
+    close(h->fd);
 }
 
-typedef std::unique_ptr<amdgpu_state, std::function<void(amdgpu_state*)>> amdgpu_ptr;
+typedef std::unique_ptr<amdgpu_handles, std::function<void(amdgpu_handles*)>> amdgpu_ptr;
 static amdgpu_ptr amdgpu_dev;
 
 bool amdgpu_open(const char *pci_dev) {
@@ -186,7 +186,7 @@ bool amdgpu_open(const char *pci_dev) {
         return false;
     }
 
-    amdgpu_dev = {new amdgpu_state{dev, fd, drm_major, drm_minor}, amdgpu_cleanup};
+    amdgpu_dev = {new amdgpu_handles{dev, fd, drm_major, drm_minor}, amdgpu_cleanup};
     return true;
 }
 
