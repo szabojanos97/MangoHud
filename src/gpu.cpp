@@ -14,9 +14,10 @@
 #include <libdrm/amdgpu_drm.h>
 #include <libdrm/amdgpu.h>
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 
-struct gpuInfo gpu_info;
+struct gpuInfo gpu_info {};
 amdgpu_files amdgpu {};
 decltype(&getAmdGpuInfo) getAmdGpuInfo_actual = nullptr;
 
@@ -151,9 +152,12 @@ static amdgpu_ptr amdgpu_dev;
 bool amdgpu_open(const char *pci_dev) {
 
     int fd = drmOpen(NULL, pci_dev); // pci:0000:XX:XX.X
+    //int fd = open("/dev/dri/card0", O_RDWR);
 
-    if (fd < 0)
+    if (fd < 0) {
+        perror("MANGOHUD: Failed to open DRM device"); // Gives sensible perror message?
         return false;
+    }
 
     drmVersionPtr ver = drmGetVersion(fd);
 
@@ -192,40 +196,26 @@ void getAmdGpuInfo_libdrm(){
 
     if (!amdgpu_query_info(amdgpu_dev->dev, AMDGPU_INFO_VRAM_USAGE, sizeof(uint64_t), &value))
         gpu_info.memoryUsed = float(value) / (1024 * 1024 * 1024);
-    else
-        gpu_info.memoryUsed = 0;
 
     // FIXME probably not correct sensor
     if (!amdgpu_query_info(amdgpu_dev->dev, AMDGPU_INFO_MEMORY, sizeof(uint64_t), &value))
         gpu_info.memoryTotal = float(value) / (1024 * 1024 * 1024);
-    else
-        gpu_info.memoryTotal = 0;
 
     if (DRM_ATLEAST_VERSION(3, 11)) {
         if (!amdgpu_query_sensor_info(amdgpu_dev->dev, AMDGPU_INFO_SENSOR_GFX_SCLK, sizeof(uint32_t), &value32))
             gpu_info.CoreClock = value32;
-        else
-            gpu_info.CoreClock = 0;
 
         if (!amdgpu_query_sensor_info(amdgpu_dev->dev, AMDGPU_INFO_SENSOR_GFX_MCLK, sizeof(uint32_t), &value32)) // XXX Doesn't work on APUs
             gpu_info.MemClock = value32;
-        else
-            gpu_info.MemClock = 0;
 
         if (!amdgpu_query_sensor_info(amdgpu_dev->dev, AMDGPU_INFO_SENSOR_GPU_LOAD, sizeof(uint32_t), &value32))
             gpu_info.load = value32;
-        else
-            gpu_info.load = 0;
 
         if (!amdgpu_query_sensor_info(amdgpu_dev->dev, AMDGPU_INFO_SENSOR_GPU_TEMP, sizeof(uint32_t), &value32))
             gpu_info.temp = value32 / 1000;
-        else
-            gpu_info.temp = 0;
 
         if (!amdgpu_query_sensor_info(amdgpu_dev->dev, AMDGPU_INFO_SENSOR_GPU_AVG_POWER, sizeof(uint32_t), &value32))
             gpu_info.powerUsage = value32;
-        else
-            gpu_info.powerUsage = 0;
     }
 }
 #endif
