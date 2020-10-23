@@ -149,10 +149,8 @@ static void amdgpu_cleanup(amdgpu_handles *h){
 typedef std::unique_ptr<amdgpu_handles, std::function<void(amdgpu_handles*)>> amdgpu_ptr;
 static amdgpu_ptr amdgpu_dev;
 
-bool amdgpu_open(const char *pci_dev) {
-
-    int fd = drmOpen(NULL, pci_dev); // pci:0000:XX:XX.X
-    //int fd = open("/dev/dri/card0", O_RDWR);
+bool amdgpu_open(const char *path) {
+    int fd = open(path, O_RDWR | O_CLOEXEC);
 
     if (fd < 0) {
         perror("MANGOHUD: Failed to open DRM device"); // Gives sensible perror message?

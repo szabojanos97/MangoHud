@@ -33,7 +33,7 @@ void getNvidiaGpuInfo(void);
 void getAmdGpuInfo(void);
 #ifdef HAVE_LIBDRM_AMDGPU
 void getAmdGpuInfo_libdrm();
-bool amdgpu_open(const char *pci_dev);
+bool amdgpu_open(const char *path);
 #endif
 extern decltype(&getAmdGpuInfo) getAmdGpuInfo_actual;
 bool checkNvidia(const char *pci_dev);

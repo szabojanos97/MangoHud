@@ -547,9 +547,8 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
          if (line != "0x1002" || !file_exists(path + "/device/gpu_busy_percent"))
             continue;
 
-         path += "/device";
          if (pci_bus_parsed && pci_dev) {
-            string pci_device = read_symlink(path.c_str());
+            string pci_device = read_symlink((path + "/device").c_str());
 #ifndef NDEBUG
             std::cerr << "PCI device symlink: " << pci_device << "\n";
 #endif
@@ -564,31 +563,25 @@ void init_gpu_stats(uint32_t& vendorID, overlay_params& params)
 #endif
 
 #ifdef HAVE_LIBDRM_AMDGPU
-         /* Try to open gpu with libdrm and authenticate with XCB */
-         std::string pfx_pci_bus;
-         if (pci_bus_parsed && pci_dev)
-            pfx_pci_bus = "pci:" + params.pci_dev;
-         else {
-            string pci_device = read_symlink(path.c_str());
-            auto p = pci_device.find_last_of("/");
-            if (p != std::string::npos && p + 1 < pci_device.size()) {
-               pfx_pci_bus = "pci:" + pci_device.substr(p + 1);
-            }
-         }
+         int idx = -1;
+         //TODO make neater
+         int res = sscanf(path.c_str(), "/sys/class/drm/card%d", &idx);
+         std::string dri_path = "/dev/dri/card" + std::to_string(idx);
 
-         if (amdgpu_open(pfx_pci_bus.c_str())) {
+         if (res == 1 && amdgpu_open(dri_path.c_str())) {
             vendorID = 0x1002;
             using_libdrm = true;
             getAmdGpuInfo_actual = getAmdGpuInfo_libdrm;
 #ifndef NDEBUG
-            std::cerr << "MANGOHUD: using libdrm_amdgpu\n";
+            std::cerr << "MANGOHUD: using libdrm\n";
 #endif
             break;
          } else {
-            std::cerr << "MANGOHUD: Failed to open amdgpu device '" << pfx_pci_bus << "' with libdrm, falling back to using hwmon sysfs.\n";
+            std::cerr << "MANGOHUD: Failed to open device '/dev/dri/card" << idx << "' with libdrm, falling back to using hwmon sysfs.\n";
          }
 #endif
 
+         path += "/device";
          if (!amdgpu.busy)
             amdgpu.busy = fopen((path + "/gpu_busy_percent").c_str(), "r");
          if (!amdgpu.vram_total)
