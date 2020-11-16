@@ -226,6 +226,8 @@ static void unmap_object(uint64_t obj)
 #define CHAR_CELSIUS    "\xe2\x84\x83"
 #define CHAR_FAHRENHEIT "\xe2\x84\x89"
 
+static void shutdown_swapchain_font(struct swapchain_data*);
+
 static VkLayerInstanceCreateInfo *get_instance_chain_info(const VkInstanceCreateInfo *pCreateInfo,
                                                           VkLayerFunction func)
 {
@@ -1117,13 +1119,14 @@ static void upload_image_data(struct device_data *device_data,
                                           1, use_barrier);
 }
 
-static VkDescriptorSet create_image_with_desc(struct swapchain_data *data,
-                                          uint32_t width,
-                                          uint32_t height,
-                                          VkFormat format,
-                                          VkImage& image,
-                                          VkDeviceMemory& image_mem,
-                                          VkImageView& image_view)
+static void create_image(struct swapchain_data *data,
+                        VkDescriptorSet descriptor_set,
+                        uint32_t width,
+                        uint32_t height,
+                        VkFormat format,
+                        VkImage& image,
+                        VkDeviceMemory& image_mem,
+                        VkImageView& image_view)
 {
    struct device_data *device_data = data->device;
 
@@ -1170,9 +1173,22 @@ static VkDescriptorSet create_image_with_desc(struct swapchain_data *data,
    VK_CHECK(device_data->vtable.CreateImageView(device_data->device, &view_info,
                                                 NULL, &image_view));
 
-   VkDescriptorSet descriptor_set;
+   update_image_descriptor(data, image_view, descriptor_set);
+}
 
-   VkDescriptorSetAllocateInfo alloc_info = {};
+static VkDescriptorSet create_image_with_desc(struct swapchain_data *data,
+                                          uint32_t width,
+                                          uint32_t height,
+                                          VkFormat format,
+                                          VkImage& image,
+                                          VkDeviceMemory& image_mem,
+                                          VkImageView& image_view)
+{
+   struct device_data *device_data = data->device;
+
+   VkDescriptorSet descriptor_set {};
+
+   VkDescriptorSetAllocateInfo alloc_info {};
    alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
    alloc_info.descriptorPool = data->descriptor_pool;
    alloc_info.descriptorSetCount = 1;
@@ -1181,14 +1197,52 @@ static VkDescriptorSet create_image_with_desc(struct swapchain_data *data,
                                                        &alloc_info,
                                                        &descriptor_set));
 
-   update_image_descriptor(data, image_view, descriptor_set);
+   create_image(data, descriptor_set, width, height, format, image, image_mem, image_view);
    return descriptor_set;
+}
+
+static void check_fonts(struct swapchain_data* data)
+{
+   struct device_data *device_data = data->device;
+   struct instance_data *instance_data = device_data->instance;
+   auto& params = instance_data->params;
+   ImGuiIO& io = ImGui::GetIO();
+   auto default_font = io.Fonts->Fonts[0];
+
+   if ((default_font->FontSize != params.font_size)
+         || ((data->sw_stats.font_text != default_font) && (data->sw_stats.font_text->FontSize != params.font_size_text))
+         || (!params.no_small_font && default_font == data->sw_stats.font1)
+         || (params.no_small_font && default_font != data->sw_stats.font1)
+   ) {
+      std::cerr << "MANGOHUD: recreating font image\n";
+      VkDescriptorSet desc_set = (VkDescriptorSet)io.Fonts->TexID;
+      create_fonts(instance_data->params, data->sw_stats.font1, data->sw_stats.font_text);
+      unsigned char* pixels;
+      int width, height;
+      io.Fonts->GetTexDataAsAlpha8(&pixels, &width, &height);
+
+      // wait for rendering to complete, if any
+      device_data->vtable.DeviceWaitIdle(device_data->device);
+      shutdown_swapchain_font(data);
+
+      if (desc_set)
+         create_image(data, desc_set, width, height, VK_FORMAT_R8_UNORM, data->font_image, data->font_mem, data->font_image_view);
+      else
+         desc_set = create_image_with_desc(data, width, height, VK_FORMAT_R8_UNORM, data->font_image, data->font_mem, data->font_image_view);
+
+      io.Fonts->TexID = (ImTextureID) desc_set;
+
+      data->font_uploaded = false;
+   }
 }
 
 static void ensure_swapchain_fonts(struct swapchain_data *data,
                                    VkCommandBuffer command_buffer)
 {
    struct device_data *device_data = data->device;
+
+   check_fonts(data);
+
    if (data->font_uploaded)
       return;
 
@@ -1950,6 +2004,18 @@ static void setup_swapchain_data(struct swapchain_data *data,
                                                   NULL, &data->command_pool));
 }
 
+static void shutdown_swapchain_font(struct swapchain_data *data)
+{
+   struct device_data *device_data = data->device;
+
+   device_data->vtable.DestroyImageView(device_data->device, data->font_image_view, NULL);
+   device_data->vtable.DestroyImage(device_data->device, data->font_image, NULL);
+   device_data->vtable.FreeMemory(device_data->device, data->font_mem, NULL);
+
+   device_data->vtable.DestroyBuffer(device_data->device, data->upload_font_buffer, NULL);
+   device_data->vtable.FreeMemory(device_data->device, data->upload_font_buffer_mem, NULL);
+}
+
 static void shutdown_swapchain_data(struct swapchain_data *data)
 {
    struct device_data *device_data = data->device;
@@ -1983,12 +2049,7 @@ static void shutdown_swapchain_data(struct swapchain_data *data)
                                                   data->descriptor_layout, NULL);
 
    device_data->vtable.DestroySampler(device_data->device, data->font_sampler, NULL);
-   device_data->vtable.DestroyImageView(device_data->device, data->font_image_view, NULL);
-   device_data->vtable.DestroyImage(device_data->device, data->font_image, NULL);
-   device_data->vtable.FreeMemory(device_data->device, data->font_mem, NULL);
-
-   device_data->vtable.DestroyBuffer(device_data->device, data->upload_font_buffer, NULL);
-   device_data->vtable.FreeMemory(device_data->device, data->upload_font_buffer_mem, NULL);
+   shutdown_swapchain_font(data);
 
    ImGui::DestroyContext(data->imgui_context);
 }
